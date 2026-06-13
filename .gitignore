@@ -1,0 +1,15 @@
+# Built binaries
+/mysql-edge
+/binfinity
+/binfinity-addon-mysql
+examples/mysql-client/mysql-edge
+examples/mysql-client/binfinity
+# Test artifacts
+*.test
+*.out
+# Local state
+credentials.json
+*.credentials.json
+/data/
+# OS / editor
+.DS_Store

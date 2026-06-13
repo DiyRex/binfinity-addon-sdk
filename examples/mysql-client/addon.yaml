@@ -1,0 +1,22 @@
+# Binfinity addon manifest. Declares the source this edge client handles. A new
+# client (postgres, wordpress, files, …) ships its own manifest + agent and
+# reuses the SAME universal contract — only the convert step differs.
+name: mysql-client
+data_type: mysql
+version: 0.1.0
+capabilities:
+  - backup
+  - restore
+# How this edge converts its source to the canonical BSP stream (documentation;
+# the agent implements it):
+#   backup:  mysqldump --databases <db> | binfinity backup --in - --store <grpc>
+#   restore: binfinity restore --id <id> --out <file> && mysql < <file>
+requires_env:
+  - BF_ENDPOINT        # Console base URL (https://…)
+  - BF_SETUP_KEY       # enrollment key minted in the Console
+  - STORE_SPEC         # grpc://<host>:8090 (SMS data plane)
+  - MYSQL_HOST
+  - MYSQL_USER
+  - MYSQL_PASSWORD
+  - MYSQL_DB
+  - BINFINITY_PASSPHRASE
