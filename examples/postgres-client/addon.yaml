@@ -1,0 +1,19 @@
+name: postgres-client
+data_type: postgres
+version: 0.1.0
+capabilities:
+  - backup
+  - restore
+# Convert steps (the SDK runs the data plane):
+#   backup:  pg_dump --clean --if-exists <db> | binfinity backup --in -
+#   restore: binfinity restore --out - | psql -d <db>
+requires_env:
+  - BF_ENDPOINT
+  - BF_SETUP_KEY
+  - STORE_SPEC
+  - BINFINITY_PASSPHRASE
+  - PG_HOST
+  - PG_PORT
+  - PG_USER
+  - PG_PASSWORD
+  - PG_DB

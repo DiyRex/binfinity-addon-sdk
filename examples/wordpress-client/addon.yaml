@@ -1,0 +1,19 @@
+name: wordpress-client
+data_type: wordpress
+version: 0.1.0
+capabilities:
+  - backup
+  - restore
+# Composite source: one stream bundles the DB dump + wp-content.
+#   backup:  mysqldump > db.sql ; tar db.sql wp-content | binfinity backup --in -
+#   restore: binfinity restore | tar -x ; mysql < db.sql ; cp -a wp-content
+requires_env:
+  - BF_ENDPOINT
+  - BF_SETUP_KEY
+  - STORE_SPEC
+  - BINFINITY_PASSPHRASE
+  - WP_PATH
+  - WORDPRESS_DB_HOST
+  - WORDPRESS_DB_USER
+  - WORDPRESS_DB_PASSWORD
+  - WORDPRESS_DB_NAME

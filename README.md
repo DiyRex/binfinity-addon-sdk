@@ -124,7 +124,7 @@ fake Console with a stub `DataPlane` — no binary or network required.
 | `*.go` | the SDK package (`package binfinity`) |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | full developer guide — connect, data flow, every request/response + validation, non-Go path, and how it compares to Velero, Bacula/Bareos, restic/Kopia and the Postgres backup tools |
 | [`BLUEPRINT.md`](BLUEPRINT.md) | the one-page mental model |
-| [`examples/mysql-client/`](examples/mysql-client/) | the reference addon — a complete, SDK-based MySQL connector (~70 lines) |
+| [`examples/`](examples/) | complete, SDK-based reference connectors: [mysql](examples/mysql-client/), [postgres](examples/postgres-client/), [files](examples/files-client/), and [wordpress](examples/wordpress-client/) (the composite *database + files* pattern) |
 
 ## License
 

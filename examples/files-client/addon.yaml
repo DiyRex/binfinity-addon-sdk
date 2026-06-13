@@ -1,0 +1,15 @@
+name: files-client
+data_type: files
+version: 0.1.0
+capabilities:
+  - backup
+  - restore
+# Convert steps (the SDK runs the data plane):
+#   backup:  tar -c -C <root> .  | binfinity backup --in -
+#   restore: binfinity restore --out - | tar -x -C <root>
+requires_env:
+  - BF_ENDPOINT
+  - BF_SETUP_KEY
+  - STORE_SPEC
+  - BINFINITY_PASSPHRASE
+  - FILES_ROOT
