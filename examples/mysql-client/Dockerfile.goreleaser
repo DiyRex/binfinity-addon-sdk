@@ -1,0 +1,11 @@
+# Used by GoReleaser (/.goreleaser.yaml). Runtime-only; the binfinity CLI is COPYed
+# from diyrex5224/binfinity-cli (built in the monorepo). mysql:8.4 = mysqldump/mysql.
+ARG BF_CLI_TAG=latest
+FROM diyrex5224/binfinity-cli:${BF_CLI_TAG} AS cli
+FROM mysql:8.4
+COPY --from=cli /usr/local/bin/binfinity /usr/local/bin/binfinity
+COPY mysql-edge /usr/local/bin/mysql-edge
+ENV HOME=/data
+RUN mkdir -p /data
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/mysql-edge"]

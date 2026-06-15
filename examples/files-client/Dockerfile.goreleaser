@@ -1,0 +1,13 @@
+# Used by GoReleaser (/.goreleaser.yaml). Runtime-only; the binfinity CLI is COPYed
+# from diyrex5224/binfinity-cli (built in the monorepo). Files addon needs no DB client.
+ARG BF_CLI_TAG=latest
+FROM diyrex5224/binfinity-cli:${BF_CLI_TAG} AS cli
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=cli /usr/local/bin/binfinity /usr/local/bin/binfinity
+COPY files-edge /usr/local/bin/files-edge
+ENV HOME=/data
+RUN mkdir -p /data
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/files-edge"]

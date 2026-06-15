@@ -13,3 +13,6 @@ credentials.json
 /data/
 # OS / editor
 .DS_Store
+
+# GoReleaser output
+/dist/

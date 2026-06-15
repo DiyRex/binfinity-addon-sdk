@@ -1,0 +1,90 @@
+# GoReleaser for the ADDONS repo — builds + publishes the example connectors.
+#
+# On a `v*` tag: cross-compiles each addon binary (linux amd64/arm64) → archives +
+# a GitHub release, and builds multi-arch Docker images for all four addons. The
+# images COPY the `binfinity` CLI from diyrex5224/binfinity-cli (published by the
+# monorepo) — so release the CLI there FIRST.
+#
+# Each example is its own module that resolves the SDK via `replace => ../..`, so
+# every build sets `dir`. Run: goreleaser release --clean  (--snapshot to dry-run).
+version: 2
+
+project_name: binfinity-addons
+
+builds:
+  - id: wordpress-edge
+    dir: examples/wordpress-client
+    main: .
+    binary: wordpress-edge
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w"]
+  - id: files-edge
+    dir: examples/files-client
+    main: .
+    binary: files-edge
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w"]
+  - id: mysql-edge
+    dir: examples/mysql-client
+    main: .
+    binary: mysql-edge
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w"]
+  - id: postgres-edge
+    dir: examples/postgres-client
+    main: .
+    binary: postgres-edge
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w"]
+
+archives:
+  - id: addons
+    ids: [wordpress-edge, files-edge, mysql-edge, postgres-edge]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+
+checksum:
+  name_template: "checksums.txt"
+
+dockers:
+  - { id: wp-amd64, ids: [wordpress-edge], goos: linux, goarch: amd64, use: buildx, dockerfile: examples/wordpress-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-wp-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-wp-addon:latest-amd64"], build_flag_templates: ["--platform=linux/amd64"] }
+  - { id: wp-arm64, ids: [wordpress-edge], goos: linux, goarch: arm64, use: buildx, dockerfile: examples/wordpress-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-wp-addon:{{ .Version }}-arm64", "diyrex5224/binfinity-wp-addon:latest-arm64"], build_flag_templates: ["--platform=linux/arm64"] }
+  - { id: files-amd64, ids: [files-edge], goos: linux, goarch: amd64, use: buildx, dockerfile: examples/files-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-files-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-files-addon:latest-amd64"], build_flag_templates: ["--platform=linux/amd64"] }
+  - { id: files-arm64, ids: [files-edge], goos: linux, goarch: arm64, use: buildx, dockerfile: examples/files-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-files-addon:{{ .Version }}-arm64", "diyrex5224/binfinity-files-addon:latest-arm64"], build_flag_templates: ["--platform=linux/arm64"] }
+  - { id: mysql-amd64, ids: [mysql-edge], goos: linux, goarch: amd64, use: buildx, dockerfile: examples/mysql-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-mysql-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-mysql-addon:latest-amd64"], build_flag_templates: ["--platform=linux/amd64"] }
+  - { id: mysql-arm64, ids: [mysql-edge], goos: linux, goarch: arm64, use: buildx, dockerfile: examples/mysql-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-mysql-addon:{{ .Version }}-arm64", "diyrex5224/binfinity-mysql-addon:latest-arm64"], build_flag_templates: ["--platform=linux/arm64"] }
+  - { id: pg-amd64, ids: [postgres-edge], goos: linux, goarch: amd64, use: buildx, dockerfile: examples/postgres-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-postgres-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-postgres-addon:latest-amd64"], build_flag_templates: ["--platform=linux/amd64"] }
+  - { id: pg-arm64, ids: [postgres-edge], goos: linux, goarch: arm64, use: buildx, dockerfile: examples/postgres-client/Dockerfile.goreleaser, image_templates: ["diyrex5224/binfinity-postgres-addon:{{ .Version }}-arm64", "diyrex5224/binfinity-postgres-addon:latest-arm64"], build_flag_templates: ["--platform=linux/arm64"] }
+
+docker_manifests:
+  - { name_template: "diyrex5224/binfinity-wp-addon:{{ .Version }}", image_templates: ["diyrex5224/binfinity-wp-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-wp-addon:{{ .Version }}-arm64"] }
+  - { name_template: "diyrex5224/binfinity-wp-addon:latest", image_templates: ["diyrex5224/binfinity-wp-addon:latest-amd64", "diyrex5224/binfinity-wp-addon:latest-arm64"] }
+  - { name_template: "diyrex5224/binfinity-files-addon:{{ .Version }}", image_templates: ["diyrex5224/binfinity-files-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-files-addon:{{ .Version }}-arm64"] }
+  - { name_template: "diyrex5224/binfinity-files-addon:latest", image_templates: ["diyrex5224/binfinity-files-addon:latest-amd64", "diyrex5224/binfinity-files-addon:latest-arm64"] }
+  - { name_template: "diyrex5224/binfinity-mysql-addon:{{ .Version }}", image_templates: ["diyrex5224/binfinity-mysql-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-mysql-addon:{{ .Version }}-arm64"] }
+  - { name_template: "diyrex5224/binfinity-mysql-addon:latest", image_templates: ["diyrex5224/binfinity-mysql-addon:latest-amd64", "diyrex5224/binfinity-mysql-addon:latest-arm64"] }
+  - { name_template: "diyrex5224/binfinity-postgres-addon:{{ .Version }}", image_templates: ["diyrex5224/binfinity-postgres-addon:{{ .Version }}-amd64", "diyrex5224/binfinity-postgres-addon:{{ .Version }}-arm64"] }
+  - { name_template: "diyrex5224/binfinity-postgres-addon:latest", image_templates: ["diyrex5224/binfinity-postgres-addon:latest-amd64", "diyrex5224/binfinity-postgres-addon:latest-arm64"] }
+
+release:
+  github:
+    owner: DiyRex
+    name: binfinity-addon-sdk
+  name_template: "Binfinity addons {{ .Tag }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:", "^ci:"]

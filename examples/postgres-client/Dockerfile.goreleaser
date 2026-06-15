@@ -1,0 +1,11 @@
+# Used by GoReleaser (/.goreleaser.yaml). Runtime-only; the binfinity CLI is COPYed
+# from diyrex5224/binfinity-cli (built in the monorepo). postgres:16 = pg_dump/psql.
+ARG BF_CLI_TAG=latest
+FROM diyrex5224/binfinity-cli:${BF_CLI_TAG} AS cli
+FROM postgres:16
+COPY --from=cli /usr/local/bin/binfinity /usr/local/bin/binfinity
+COPY postgres-edge /usr/local/bin/postgres-edge
+ENV HOME=/data
+RUN mkdir -p /data
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/postgres-edge"]
