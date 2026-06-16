@@ -58,15 +58,17 @@ func (s wpConnector) Backup(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("create db dump: %w", err)
 	}
-	dump := exec.CommandContext(ctx, "mysqldump",
-		"-h", s.dbHost, "-u", s.dbUser,
-		// --column-statistics=0: the MySQL 8 client queries information_schema.
-		// COLUMN_STATISTICS, which MariaDB does not have — without this the dump
-		// fails against MariaDB ("Unknown table 'COLUMN_STATISTICS'"). Harmless on
-		// real MySQL 8 (just disables the histogram stats query).
-		"--column-statistics=0",
-		"--add-drop-table", "--single-transaction", "--skip-comments",
-		"--databases", s.dbName)
+	dumper := pickBinary("mysqldump", "mariadb-dump")
+	args := []string{"-h", s.dbHost, "-u", s.dbUser}
+	// --column-statistics=0 is a MySQL-8-client-only flag. The MySQL 8 dumper
+	// queries information_schema.COLUMN_STATISTICS by default, which MariaDB (and
+	// MySQL 5.7) servers don't have, failing the dump. Add it ONLY when this dumper
+	// supports it, so the same addon works with any MySQL/MariaDB client + server.
+	if dumperSupports(ctx, dumper, "column-statistics") {
+		args = append(args, "--column-statistics=0")
+	}
+	args = append(args, "--add-drop-table", "--single-transaction", "--skip-comments", "--databases", s.dbName)
+	dump := exec.CommandContext(ctx, dumper, args...)
 	dump.Env = append(os.Environ(), "MYSQL_PWD="+s.dbPass)
 	dump.Stdout = f
 	var derr bytes.Buffer
@@ -113,7 +115,7 @@ func (s wpConnector) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("open db dump: %w", err)
 	}
 	defer f.Close()
-	imp := exec.CommandContext(ctx, "mysql", "-h", s.dbHost, "-u", s.dbUser)
+	imp := exec.CommandContext(ctx, pickBinary("mysql", "mariadb"), "-h", s.dbHost, "-u", s.dbUser)
 	imp.Env = append(os.Environ(), "MYSQL_PWD="+s.dbPass)
 	imp.Stdin = f
 	var ierr bytes.Buffer
@@ -252,6 +254,28 @@ func parseWPConfig(path string) map[string]string {
 func isFile(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
+}
+
+// pickBinary returns primary if it's on PATH, else fallback if it is, else
+// primary (so the run fails with a clear "not found"). Lets the addon use the
+// MySQL tools (mysqldump/mysql) or MariaDB's renamed ones (mariadb-dump/mariadb),
+// whichever the host provides.
+func pickBinary(primary, fallback string) string {
+	if _, err := exec.LookPath(primary); err == nil {
+		return primary
+	}
+	if _, err := exec.LookPath(fallback); err == nil {
+		return fallback
+	}
+	return primary
+}
+
+// dumperSupports reports whether the dump binary advertises the given long
+// option in its --help (e.g. "column-statistics"), so version-specific flags are
+// only passed to clients that understand them.
+func dumperSupports(ctx context.Context, bin, opt string) bool {
+	out, _ := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
+	return bytes.Contains(out, []byte(opt))
 }
 
 // stripPort drops a ":port" suffix from a DB host (wp-config.php often stores
