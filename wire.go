@@ -32,6 +32,15 @@ type Heartbeat struct {
 	Name     string `json:"name"`
 	DataType string `json:"data_type"`
 	Activity string `json:"activity"`
+
+	// Live progress, sent only while Activity != "idle" (all optional). The
+	// Console derives elapsed / throughput / ~% / ~ETA from these. BytesDone is the
+	// exact count of source bytes produced so far; BytesTotal is the connector's
+	// ESTIMATE of total source size (0 = unknown, e.g. a pure stream); StartedAt is
+	// when the current job began (RFC3339).
+	StartedAt  string `json:"started_at,omitempty"`
+	BytesDone  int64  `json:"bytes_done,omitempty"`
+	BytesTotal int64  `json:"bytes_total,omitempty"`
 }
 
 // Command is the single inbound control signal: the Console telling this system

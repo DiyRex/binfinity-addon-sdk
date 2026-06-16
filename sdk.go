@@ -133,11 +133,88 @@ type runner struct {
 	systemID string
 	secret   string
 	name     string
-	activity string
+
+	// pmu guards activity + the live-progress fields below (the heartbeat
+	// goroutine reads them while the poll goroutine drives a backup/restore).
+	pmu        sync.Mutex
+	activity   string
+	startedAt  time.Time
+	bytesDone  int64
+	bytesTotal int64
 
 	tmu    sync.Mutex
 	tok    string
 	tokExp time.Time
+}
+
+// SizeEstimator is an OPTIONAL Connector capability. If a connector implements
+// it, the SDK calls EstimateBytes once before a backup to seed the progress
+// total, so the Console can show an approximate % and ETA. It is best-effort:
+// return 0 when the size isn't known cheaply (a pure stream need not implement
+// it). The value is an ESTIMATE of source bytes, not the stored (deduped,
+// compressed, encrypted) size.
+type SizeEstimator interface {
+	EstimateBytes(ctx context.Context) int64
+}
+
+// countingWriter tallies bytes as they flow to the underlying writer, so the
+// heartbeat can report exact backup progress without buffering or staging.
+type countingWriter struct {
+	w   io.Writer
+	add func(int64)
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	if n > 0 {
+		c.add(int64(n))
+	}
+	return n, err
+}
+
+// countingReader tallies bytes as the connector consumes the restore stream.
+type countingReader struct {
+	r   io.Reader
+	add func(int64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.add(int64(n))
+	}
+	return n, err
+}
+
+func (r *runner) beginBackup(total int64) {
+	r.pmu.Lock()
+	r.activity, r.startedAt, r.bytesDone, r.bytesTotal = ActivityBackingUp, time.Now().UTC(), 0, total
+	r.pmu.Unlock()
+}
+
+func (r *runner) beginRestore() {
+	r.pmu.Lock()
+	r.activity, r.startedAt, r.bytesDone, r.bytesTotal = ActivityRestoring, time.Now().UTC(), 0, 0
+	r.pmu.Unlock()
+}
+
+func (r *runner) addBytes(n int64) {
+	r.pmu.Lock()
+	r.bytesDone += n
+	r.pmu.Unlock()
+}
+
+func (r *runner) endActivity() {
+	r.pmu.Lock()
+	r.activity, r.startedAt, r.bytesDone, r.bytesTotal = ActivityIdle, time.Time{}, 0, 0
+	r.pmu.Unlock()
+}
+
+// progress snapshots the live state for a heartbeat.
+func (r *runner) progress() (activity string, done, total int64, started time.Time) {
+	r.pmu.Lock()
+	defer r.pmu.Unlock()
+	return r.activity, r.bytesDone, r.bytesTotal, r.startedAt
 }
 
 // token returns a cached AMS access token, refreshing via the client-credentials
@@ -277,9 +354,15 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 }
 
 func (r *runner) sendHeartbeat(ctx context.Context) {
-	body, _ := json.Marshal(Heartbeat{
-		SystemID: r.systemID, Name: r.name, DataType: r.conn.DataType(), Activity: r.activity,
-	})
+	act, done, total, started := r.progress()
+	hb := Heartbeat{SystemID: r.systemID, Name: r.name, DataType: r.conn.DataType(), Activity: act}
+	if act != ActivityIdle {
+		hb.BytesDone, hb.BytesTotal = done, total
+		if !started.IsZero() {
+			hb.StartedAt = started.Format(time.RFC3339)
+		}
+	}
+	body, _ := json.Marshal(hb)
 	resp, err := r.post(ctx, r.cfg.Endpoint+"/cbs/api/v1/agent/heartbeat", body)
 	if err != nil {
 		r.logf("heartbeat: %v", err)
@@ -332,15 +415,13 @@ func (r *runner) execute(ctx context.Context, cmd Command) {
 	var res Result
 	switch cmd.Type {
 	case CmdBackup:
-		r.activity = ActivityBackingUp
 		res = r.doBackup(ctx, cmd.BackupID)
 	case CmdRestore:
-		r.activity = ActivityRestoring
 		res = r.doRestore(ctx, cmd.BackupID)
 	default:
 		res = Result{Status: statusFailed, BackupID: cmd.BackupID, Error: "unknown command type " + cmd.Type}
 	}
-	r.activity = ActivityIdle
+	r.endActivity()
 	r.report(ctx, cmd.ID, res)
 }
 
@@ -348,8 +429,15 @@ func (r *runner) doBackup(ctx context.Context, id string) Result {
 	if id == "" { // the edge assigns the id when the Console leaves it blank
 		id = r.conn.DataType() + "-" + time.Now().UTC().Format("20060102T150405Z")
 	}
+	var total int64
+	if est, ok := r.conn.(SizeEstimator); ok {
+		if n := est.EstimateBytes(ctx); n > 0 {
+			total = n
+		}
+	}
+	r.beginBackup(total)
 	stored, err := r.dp.Backup(ctx, id, r.conn.DataType(), func(w io.Writer) error {
-		return r.conn.Backup(ctx, w)
+		return r.conn.Backup(ctx, &countingWriter{w: w, add: r.addBytes})
 	})
 	if err != nil {
 		return Result{Status: statusFailed, BackupID: id, Error: err.Error()}
@@ -362,8 +450,9 @@ func (r *runner) doRestore(ctx context.Context, id string) Result {
 	if id == "" {
 		return Result{Status: statusFailed, Error: "restore requires a backup_id"}
 	}
+	r.beginRestore()
 	err := r.dp.Restore(ctx, id, func(rd io.Reader) error {
-		return r.conn.Restore(ctx, rd)
+		return r.conn.Restore(ctx, &countingReader{r: rd, add: r.addBytes})
 	})
 	if err != nil {
 		return Result{Status: statusFailed, BackupID: id, Error: err.Error()}

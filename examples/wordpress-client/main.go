@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	binfinity "github.com/DiyRex/binfinity-addon-sdk"
@@ -36,6 +37,32 @@ type wpConnector struct {
 }
 
 func (wpConnector) DataType() string { return "wordpress" }
+
+// EstimateBytes implements binfinity.SizeEstimator: a best-effort estimate of the
+// backup's source size (wp-content tree + database data/index length) so the
+// Console can show an approximate % and ETA. Errors are swallowed — a partial or
+// zero estimate just means the Console shows bytes/throughput without a %.
+func (s wpConnector) EstimateBytes(ctx context.Context) int64 {
+	var total int64
+	_ = filepath.WalkDir(filepath.Join(s.path, "wp-content"), func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if fi, e := d.Info(); e == nil {
+				total += fi.Size()
+			}
+		}
+		return nil
+	})
+	q := exec.CommandContext(ctx, pickBinary("mysql", "mariadb"),
+		"-h", s.dbHost, "-u", s.dbUser, "-N", "-B", "-e",
+		"SELECT IFNULL(SUM(data_length+index_length),0) FROM information_schema.tables WHERE table_schema=DATABASE()", s.dbName)
+	q.Env = append(os.Environ(), "MYSQL_PWD="+s.dbPass)
+	if out, err := q.Output(); err == nil {
+		if n, e := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); e == nil {
+			total += n
+		}
+	}
+	return total
+}
 
 // Backup quiesces the site, dumps the DB, and tars {db.sql + wp-content} as a
 // single stream — so the database and files are captured at the same instant.
