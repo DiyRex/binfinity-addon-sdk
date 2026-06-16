@@ -16,3 +16,6 @@ credentials.json
 
 # GoReleaser output
 /dist/
+
+# built example connector binaries
+examples/*/binfinity-addon-*

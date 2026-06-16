@@ -33,11 +33,10 @@ type Heartbeat struct {
 	DataType string `json:"data_type"`
 	Activity string `json:"activity"`
 
-	// Live progress, sent only while Activity != "idle" (all optional). The
-	// Console derives elapsed / throughput / ~% / ~ETA from these. BytesDone is the
-	// exact count of source bytes produced so far; BytesTotal is the connector's
-	// ESTIMATE of total source size (0 = unknown, e.g. a pure stream); StartedAt is
-	// when the current job began (RFC3339).
+	// Live progress, sent only while Activity != "idle" (all optional). BytesDone
+	// is exact source bytes processed; BytesTotal is the connector's ESTIMATE of
+	// total source size (0 = unknown); StartedAt (RFC3339) is when the job began.
+	// The Console derives elapsed / throughput / ~% / ~ETA from these.
 	StartedAt  string `json:"started_at,omitempty"`
 	BytesDone  int64  `json:"bytes_done,omitempty"`
 	BytesTotal int64  `json:"bytes_total,omitempty"`
@@ -59,6 +58,17 @@ type Command struct {
 	BackupID string `json:"backup_id"`
 	Status   string `json:"status"`
 	Created  string `json:"created_at"`
+
+	// Source-incremental (ADR-0009 Layer B; all optional, backward-compatible).
+	// For a backup: Mode "incremental" + a prior Cursor asks an IncrementalConnector
+	// to emit only the delta since Cursor (relative to BaseBackupID). For a restore:
+	// Chain is the ordered backup ids to apply (base first, then deltas) so the
+	// connector reconstructs point-in-time; empty Chain = single, self-contained
+	// restore (Layer A).
+	Mode         string   `json:"mode,omitempty"`           // "" | "full" | "incremental"
+	BaseBackupID string   `json:"base_backup_id,omitempty"` // base full this delta builds on
+	Cursor       string   `json:"cursor,omitempty"`         // opaque since-point from the prior backup
+	Chain        []string `json:"chain,omitempty"`          // restore: ordered ids (base→…→target)
 }
 
 // Command type constants — the only two values Command.Type ever takes.
@@ -79,6 +89,10 @@ type Result struct {
 	BackupID string `json:"backup_id"`
 	Bytes    int64  `json:"bytes"`
 	Error    string `json:"error,omitempty"`
+	// Cursor is the new opaque since-point an IncrementalConnector produced for
+	// this backup (binlog pos / WAL LSN / snapshot id). CBS persists it per system
+	// and hands it back as Command.Cursor on the next incremental backup (ADR-0009).
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // Activity values reported in Heartbeat.Activity.
