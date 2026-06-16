@@ -100,11 +100,14 @@ func (s wpConnector) BackupIncremental(ctx context.Context, w io.Writer, cursor 
 // since is non-zero, only wp-content files modified after it are included (the delta)
 // — the freshly written db.sql is always newer than since, so the DB is always present.
 func (s wpConnector) writeArchive(ctx context.Context, w io.Writer, since time.Time) error {
-	// Maintenance mode for a coherent snapshot; always cleared, even on failure.
-	maint := filepath.Join(s.path, ".maintenance")
-	if err := os.WriteFile(maint, []byte("<?php $upgrading = time(); ?>"), 0o644); err == nil {
-		defer os.Remove(maint)
-	}
+	// NOTE: we deliberately do NOT put the site into maintenance mode. A
+	// `.maintenance` flag written here would be orphaned if the backup is cancelled
+	// or the process is killed mid-run (its cleanup defer never runs), leaving the
+	// live site stuck at HTTP 503 — exactly the "never harm the site" failure we must
+	// avoid. The DB is dumped with --single-transaction (an InnoDB MVCC-consistent
+	// snapshot needs no lock), and wp-content is read live, matching UpdraftPlus.
+	// Best-effort: clear any stale flag a previous (killed) run may have left behind.
+	_ = os.Remove(filepath.Join(s.path, ".maintenance"))
 
 	stage, err := os.MkdirTemp("", "wp-backup-")
 	if err != nil {
