@@ -59,8 +59,14 @@ func (s wpConnector) Backup(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("create db dump: %w", err)
 	}
 	dump := exec.CommandContext(ctx, "mysqldump",
-		"-h", s.dbHost, "-u", s.dbUser, "--databases", s.dbName,
-		"--add-drop-table", "--single-transaction", "--skip-comments")
+		"-h", s.dbHost, "-u", s.dbUser,
+		// --column-statistics=0: the MySQL 8 client queries information_schema.
+		// COLUMN_STATISTICS, which MariaDB does not have — without this the dump
+		// fails against MariaDB ("Unknown table 'COLUMN_STATISTICS'"). Harmless on
+		// real MySQL 8 (just disables the histogram stats query).
+		"--column-statistics=0",
+		"--add-drop-table", "--single-transaction", "--skip-comments",
+		"--databases", s.dbName)
 	dump.Env = append(os.Environ(), "MYSQL_PWD="+s.dbPass)
 	dump.Stdout = f
 	var derr bytes.Buffer
