@@ -19,6 +19,13 @@ type Credentials struct {
 	TenantID   string   `json:"tenant_id"`
 	Roles      []string `json:"roles"`
 	EnrolledAt string   `json:"enrolled_at,omitempty"` // stamped by the SDK on persist
+
+	// Platform-managed data-plane config, delivered at enrollment so an addon needs
+	// only a setup key + passphrase. These are NOT zero-knowledge secrets (the
+	// platform owns SMS); the passphrase stays edge-only. An explicit STORE_SPEC /
+	// SMS_AUTH_TOKEN env still overrides these.
+	StoreSpec string `json:"store_spec,omitempty"` // SMS data-plane endpoint (e.g. grpc://host:8090)
+	SmsToken  string `json:"sms_token,omitempty"`  // SMS data-plane bearer
 }
 
 // Heartbeat is the periodic liveness + state signal the edge POSTs to CBS. It is
@@ -102,8 +109,13 @@ const (
 	ActivityRestoring = "restoring"
 )
 
-// statusDone / statusFailed are the two Result.Status values.
+// Result.Status values. statusCancelled marks a backup/restore the operator
+// cancelled mid-flight: a terminal, non-error outcome — CBS releases the state
+// lock and writes NO catalog entry (the backup never committed its manifest), so
+// the chain's base full and prior increments are untouched and the partially
+// uploaded chunks are left as orphans for GC to reclaim.
 const (
-	statusDone   = "done"
-	statusFailed = "failed"
+	statusDone      = "done"
+	statusFailed    = "failed"
+	statusCancelled = "cancelled"
 )

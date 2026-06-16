@@ -37,6 +37,7 @@ type CLIDataPlane struct {
 	Binary     string // path to the binfinity binary (default "binfinity")
 	Store      string // STORE_SPEC, e.g. grpc://host:8090 | s3://bucket | local:/path
 	Passphrase string // exported as BINFINITY_PASSPHRASE for the CLI (zero-knowledge)
+	SmsToken   string // exported as SMS_AUTH_TOKEN for the CLI's gRPC data-plane auth
 }
 
 // bytesStoredRe extracts the ciphertext size from `binfinity backup` output
@@ -56,6 +57,9 @@ func (d CLIDataPlane) env() []string {
 	e := os.Environ()
 	if d.Passphrase != "" {
 		e = append(e, "BINFINITY_PASSPHRASE="+d.Passphrase)
+	}
+	if d.SmsToken != "" {
+		e = append(e, "SMS_AUTH_TOKEN="+d.SmsToken)
 	}
 	return e
 }

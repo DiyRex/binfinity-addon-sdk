@@ -82,7 +82,8 @@ type IncrementalConnector interface {
 type Config struct {
 	Endpoint   string        // Console base URL (BF_ENDPOINT), e.g. https://binfinity.example.com
 	SetupKey   string        // enrollment key minted in the Console (BF_SETUP_KEY)
-	Store      string        // SMS data-plane spec (STORE_SPEC), e.g. grpc://host:8090
+	Store      string        // SMS data-plane spec (STORE_SPEC); empty → use what enrollment delivers
+	SmsToken   string        // SMS data-plane bearer (SMS_AUTH_TOKEN); empty → use what enrollment delivers
 	Passphrase string        // tenant passphrase (BINFINITY_PASSPHRASE) — never leaves the edge
 	Name       string        // system name shown in the Console (default <data_type>-<hostname>)
 	CredPath   string        // where durable credentials are persisted (CRED_PATH)
@@ -102,7 +103,8 @@ func ConfigFromEnv(dataType string) Config {
 	return Config{
 		Endpoint:   os.Getenv("BF_ENDPOINT"),
 		SetupKey:   os.Getenv("BF_SETUP_KEY"),
-		Store:      envOr("STORE_SPEC", "grpc://localhost:8090"),
+		Store:      os.Getenv("STORE_SPEC"),     // empty → enrollment-delivered store wins
+		SmsToken:   os.Getenv("SMS_AUTH_TOKEN"), // empty → enrollment-delivered token wins
 		Passphrase: os.Getenv("BINFINITY_PASSPHRASE"),
 		Name:       envOr("BF_NAME", dataType+"-"+hostname()),
 		CredPath:   envOr("CRED_PATH", defaultCredPath()),
@@ -140,7 +142,25 @@ func Run(ctx context.Context, c Connector, cfg Config) error {
 	}
 	r.systemID, r.name, r.secret = creds.ClientID, creds.Name, creds.Secret
 	r.seed = seedFrom(r.systemID) // per-system jitter seed (no global rand)
-	r.logf("enrolled as system %s (%s); data_type=%s store=%s", r.systemID, r.name, c.DataType(), cfg.Store)
+
+	// Resolve the data-plane config: an explicit env (STORE_SPEC / SMS_AUTH_TOKEN)
+	// always wins; otherwise use what the platform delivered at enrollment, so an
+	// addon needs only a setup key + passphrase. Only rebuild the DEFAULT CLI data
+	// plane (a caller-injected DataPlane is left untouched).
+	// Data-plane config: explicit env wins; else what enrollment delivered. Token
+	// grants refresh it later (also reaching addons whose saved creds predate delivery).
+	store, smsToken := cfg.Store, cfg.SmsToken
+	if store == "" {
+		store = creds.StoreSpec
+	}
+	if smsToken == "" {
+		smsToken = creds.SmsToken
+	}
+	r.applyDP(store, smsToken)
+	if store == "" {
+		store = "grpc://localhost:8090"
+	}
+	r.logf("enrolled as system %s (%s); data_type=%s store=%s", r.systemID, r.name, c.DataType(), store)
 
 	go r.heartbeatLoop(ctx)
 	go r.reportLoop(ctx) // R3: drain any results unacked from a prior run, then retry
@@ -155,12 +175,19 @@ type runner struct {
 	conn     Connector
 	cfg      Config
 	hc       *http.Client
-	dp       DataPlane
 	systemID string
 	secret   string
 	name     string
 	seed     int64   // per-system jitter seed for backoff (no global rand)
 	out      *outbox // R3: durable, at-least-once result delivery
+
+	// dmu guards the data plane + its resolved config. The token goroutine may adopt
+	// platform-delivered store/token (see fetchToken) while a backup reads the plane.
+	dmu      sync.Mutex
+	dp       DataPlane
+	dpStore  string // resolved STORE_SPEC (env > enrollment/token-delivered > default)
+	dpToken  string // resolved SMS_AUTH_TOKEN
+	customDP bool   // caller injected cfg.DataPlane → never rebuilt
 
 	amu        sync.Mutex // guards activity + live progress (heartbeat reads; execute writes)
 	activity   string
@@ -168,9 +195,86 @@ type runner struct {
 	bytesDone  int64
 	bytesTotal int64
 
+	// jmu guards the in-flight job's cancel hook. execute installs jobCancel when a
+	// backup/restore starts; the heartbeat goroutine calls requestCancel() when CBS
+	// signals cancel:true, aborting the job's context (which kills the data-plane
+	// stream). cancelAsked distinguishes an operator cancel from a process shutdown.
+	jmu         sync.Mutex
+	jobCancel   context.CancelFunc
+	cancelAsked bool
+
 	tmu    sync.Mutex
 	tok    string
 	tokExp time.Time
+}
+
+// startJob derives a cancellable context for one command and registers its cancel
+// hook so the heartbeat goroutine can abort it on an operator cancel request.
+func (r *runner) startJob(parent context.Context) context.Context {
+	jctx, cancel := context.WithCancel(parent)
+	r.jmu.Lock()
+	r.jobCancel, r.cancelAsked = cancel, false
+	r.jmu.Unlock()
+	return jctx
+}
+
+func (r *runner) endJob() {
+	r.jmu.Lock()
+	if r.jobCancel != nil {
+		r.jobCancel()
+	}
+	r.jobCancel = nil
+	r.jmu.Unlock()
+}
+
+// requestCancel aborts the in-flight job (if any). Safe to call repeatedly.
+func (r *runner) requestCancel() {
+	r.jmu.Lock()
+	cancel := r.jobCancel
+	if cancel != nil {
+		r.cancelAsked = true
+	}
+	r.jmu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (r *runner) wasCancelled() bool {
+	r.jmu.Lock()
+	defer r.jmu.Unlock()
+	return r.cancelAsked
+}
+
+// currentDP returns the effective data plane (guarded; it may be swapped when the
+// platform delivers updated data-plane config).
+func (r *runner) currentDP() DataPlane {
+	r.dmu.Lock()
+	defer r.dmu.Unlock()
+	return r.dp
+}
+
+// applyDP adopts non-empty store/token and rebuilds the default CLI data plane, so
+// an addon needs only a setup key + passphrase — the SMS endpoint + bearer are
+// delivered by the platform (at enrollment and on every token grant). A
+// caller-injected DataPlane is never replaced.
+func (r *runner) applyDP(store, token string) {
+	r.dmu.Lock()
+	defer r.dmu.Unlock()
+	if r.customDP {
+		return
+	}
+	if store != "" {
+		r.dpStore = store
+	}
+	if token != "" {
+		r.dpToken = token
+	}
+	useStore := r.dpStore
+	if useStore == "" {
+		useStore = "grpc://localhost:8090"
+	}
+	r.dp = CLIDataPlane{Store: useStore, Passphrase: r.cfg.Passphrase, SmsToken: r.dpToken}
 }
 
 // SizeEstimator is an OPTIONAL Connector capability: if implemented, the SDK calls
@@ -270,12 +374,26 @@ func (r *runner) fetchToken(ctx context.Context, sysID, secret string) (tok stri
 	var t struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
+		StoreSpec   string `json:"store_spec"`
+		SmsToken    string `json:"sms_token"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&t) != nil || t.AccessToken == "" {
 		return "", 0, false
 	}
 	if t.ExpiresIn <= 0 {
 		t.ExpiresIn = 300
+	}
+	// Adopt platform-delivered data-plane config (env always wins). This reaches
+	// addons enrolled before delivery existed and keeps store/token current.
+	adoptStore, adoptToken := "", ""
+	if r.cfg.Store == "" {
+		adoptStore = t.StoreSpec
+	}
+	if r.cfg.SmsToken == "" {
+		adoptToken = t.SmsToken
+	}
+	if adoptStore != "" || adoptToken != "" {
+		r.applyDP(adoptStore, adoptToken)
 	}
 	return t.AccessToken, t.ExpiresIn, true
 }
@@ -305,13 +423,21 @@ func newRunner(c Connector, cfg Config) (*runner, error) {
 		}
 		hc = &http.Client{Timeout: 30 * time.Second, Transport: tr}
 	}
-	dp := cfg.DataPlane
-	if dp == nil {
-		dp = CLIDataPlane{Store: cfg.Store, Passphrase: cfg.Passphrase}
+	customDP := cfg.DataPlane != nil
+	var dp DataPlane
+	if customDP {
+		dp = cfg.DataPlane
+	} else {
+		// Seeded from env; Run() + token grants adopt platform-delivered config.
+		st := cfg.Store
+		if st == "" {
+			st = "grpc://localhost:8090"
+		}
+		dp = CLIDataPlane{Store: st, Passphrase: cfg.Passphrase, SmsToken: cfg.SmsToken}
 	}
 	// Durable result outbox lives beside the credentials so it survives restarts.
 	ob := newOutbox(filepath.Join(filepath.Dir(cfg.CredPath), "outbox"))
-	return &runner{conn: c, cfg: cfg, hc: hc, dp: dp, activity: ActivityIdle, out: ob}, nil
+	return &runner{conn: c, cfg: cfg, hc: hc, dp: dp, customDP: customDP, dpStore: cfg.Store, dpToken: cfg.SmsToken, activity: ActivityIdle, out: ob}, nil
 }
 
 func (r *runner) logf(format string, args ...any) {
@@ -395,7 +521,16 @@ func (r *runner) sendHeartbeat(ctx context.Context) {
 		r.logf("heartbeat: %v", err)
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	// The heartbeat is the live channel while a backup runs (the poll loop is busy
+	// executing it), so CBS rides the cancel signal back on the heartbeat response.
+	var hr struct {
+		Cancel bool `json:"cancel"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&hr) == nil && hr.Cancel {
+		r.logf("cancel requested by Console; aborting in-flight job")
+		r.requestCancel()
+	}
 }
 
 func (r *runner) pollLoop(ctx context.Context) {
@@ -439,18 +574,30 @@ func (r *runner) poll(ctx context.Context) *Command {
 // for the live map and always reports, even on failure.
 func (r *runner) execute(ctx context.Context, cmd Command) {
 	r.logf("command %s: %s %s", cmd.ID, cmd.Type, cmd.BackupID)
+	// Run under a cancellable job context so an operator cancel (delivered via the
+	// heartbeat response) can abort the data-plane stream mid-flight.
+	jctx := r.startJob(ctx)
+	defer r.endJob()
 	var res Result
 	switch cmd.Type {
 	case CmdBackup:
 		r.setActivity(ActivityBackingUp)
-		res = r.doBackup(ctx, cmd)
+		res = r.doBackup(jctx, cmd)
 	case CmdRestore:
 		r.setActivity(ActivityRestoring)
-		res = r.doRestore(ctx, cmd)
+		res = r.doRestore(jctx, cmd)
 	default:
 		res = Result{Status: statusFailed, BackupID: cmd.BackupID, Error: "unknown command type " + cmd.Type}
 	}
 	r.endActivity()
+	// An operator cancel is a terminal, NON-error outcome: the data-plane aborted
+	// before committing a manifest, so report "cancelled" (not "failed"). CBS then
+	// releases the lock and records no catalog entry — existing backups are intact.
+	if r.wasCancelled() {
+		res = Result{Status: statusCancelled, BackupID: res.BackupID}
+		r.logf("command %s cancelled by operator", cmd.ID)
+	}
+	// Report on the parent ctx, not the cancelled job ctx, so the outcome still lands.
 	r.report(ctx, cmd.ID, res)
 }
 
@@ -522,7 +669,7 @@ func (r *runner) doBackup(ctx context.Context, cmd Command) Result {
 		}
 		return r.conn.Backup(ctx, cw)
 	}
-	stored, err := r.dp.Backup(ctx, id, r.conn.DataType(), produce)
+	stored, err := r.currentDP().Backup(ctx, id, r.conn.DataType(), produce)
 	if err != nil {
 		return Result{Status: statusFailed, BackupID: id, Error: err.Error()}
 	}
@@ -542,7 +689,7 @@ func (r *runner) doRestore(ctx context.Context, cmd Command) Result {
 	if inc, ok := r.conn.(IncrementalConnector); ok && len(cmd.Chain) > 0 {
 		for i, bid := range cmd.Chain {
 			isBase := i == 0
-			err := r.dp.Restore(ctx, bid, func(rd io.Reader) error {
+			err := r.currentDP().Restore(ctx, bid, func(rd io.Reader) error {
 				return inc.RestoreIncremental(ctx, &countingReader{r: rd, add: r.addBytes}, isBase)
 			})
 			if err != nil {
@@ -552,7 +699,7 @@ func (r *runner) doRestore(ctx context.Context, cmd Command) Result {
 		r.logf("restore %s done (chain of %d)", id, len(cmd.Chain))
 		return Result{Status: statusDone, BackupID: id}
 	}
-	err := r.dp.Restore(ctx, id, func(rd io.Reader) error {
+	err := r.currentDP().Restore(ctx, id, func(rd io.Reader) error {
 		return r.conn.Restore(ctx, &countingReader{r: rd, add: r.addBytes})
 	})
 	if err != nil {
