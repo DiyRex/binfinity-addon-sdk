@@ -120,6 +120,7 @@ func ConfigFromEnv(dataType string) Config {
 // fatal startup error. Most addons need nothing more than `func main() {
 // binfinity.Main(myConnector{}) }`.
 func Main(c Connector) {
+	applyMemoryLimit() // stay under the container's RAM cap (small edge nodes); no-op when unconstrained
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := Run(ctx, c, ConfigFromEnv(c.DataType())); err != nil {
