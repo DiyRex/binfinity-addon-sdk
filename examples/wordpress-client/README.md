@@ -22,14 +22,23 @@ The DB dump and files are captured at the same point in time (maintenance mode +
 
 ## Configuration (env)
 
+**Zero-config by default.** The addon auto-discovers `wp-config.php` and reads the
+DB credentials from it — so on a stock install you only need the Binfinity contract
+vars. Discovery order: `WP_CONFIG` → `<WP_PATH>/wp-config.php` (and one dir above) →
+well-known roots (official Docker/vanilla `/var/www/html`, Bitnami
+`/opt/bitnami/wordpress` & `/bitnami/wordpress`, Debian `/usr/share/wordpress`,
+cPanel docroots…) → a bounded filesystem search under `/var/www`, `/opt/bitnami`,
+`/srv`, `/app`, `/home`. Any env override below wins over the discovered value.
+
 | Env | Purpose |
 |-----|---------|
 | `BF_ENDPOINT` / `BF_SETUP_KEY` / `STORE_SPEC` / `BINFINITY_PASSPHRASE` | Binfinity contract |
-| `WP_PATH` | site root containing `wp-content` (default `/var/www/html`) |
-| `WORDPRESS_DB_HOST` / `WORDPRESS_DB_USER` / `WORDPRESS_DB_PASSWORD` / `WORDPRESS_DB_NAME` | database |
+| `WP_CONFIG` | explicit full path to `wp-config.php` (skips discovery) |
+| `WP_PATH` | site root containing `wp-content` (else: the dir of the discovered config) |
+| `WORDPRESS_DB_HOST` / `WORDPRESS_DB_USER` / `WORDPRESS_DB_PASSWORD` / `WORDPRESS_DB_NAME` (or `WP_DB_*`) | pin DB fields; otherwise read from `wp-config.php` |
 
-> `WORDPRESS_DB_HOST` must be a host (not `host:port`); split a port into a
-> separate flag if your setup uses one. The addon needs read access to
+> A `host:port` in `wp-config.php`'s `DB_HOST` is handled (the port is stripped, as
+> the dump/import shell out with `-h` only). The addon needs read access to
 > `wp-content` and write access to drop the temporary `.maintenance` flag.
 
 ## Build
