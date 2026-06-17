@@ -125,6 +125,12 @@ func (d CLIDataPlane) Restore(ctx context.Context, backupID string, consume func
 		return fmt.Errorf("open restored stream: %w", err)
 	}
 	defer f.Close()
+	// A zero-byte recovery means the CLI exited 0 but wrote nothing (e.g. an
+	// unsupported --out target). Consuming it would let the connector see an empty
+	// stream and report a no-op restore as success — fail loudly instead.
+	if fi, err := f.Stat(); err == nil && fi.Size() == 0 {
+		return fmt.Errorf("restored stream is empty (recovered 0 bytes for backup %s)", backupID)
+	}
 	if err := consume(f); err != nil {
 		return fmt.Errorf("consume restored stream: %w", err)
 	}
