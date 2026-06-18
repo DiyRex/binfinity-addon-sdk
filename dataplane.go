@@ -7,10 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 // DataPlane moves bytes between a source and Binfinity storage in the canonical
@@ -106,45 +104,52 @@ func (d CLIDataPlane) Backup(ctx context.Context, backupID, sourceType string, p
 	return stored, nil
 }
 
-// Restore recovers a backup to a temp file (integrity-verified by the CLI), then
-// hands consume a reader over it. A temp file is used because restore is
-// recover-then-import; the file is removed when done.
+// Restore STREAMS the recovered plaintext from `binfinity restore --out -`
+// straight into consume across an io.Pipe — constant memory, no staging the whole
+// backup to local disk (so a multi-GB restore works on a small node). The CLI
+// verifies integrity (incl. the Merkle root) as it streams; if a chunk is missing
+// or corrupt it closes the pipe with that error, so the consumer sees a torn
+// stream as an error, never a silent truncation. The summary line goes to the
+// CLI's stderr, so stdout carries ONLY the recovered bytes.
 func (d CLIDataPlane) Restore(ctx context.Context, backupID string, consume func(io.Reader) error) error {
-	tmp := filepath.Join(os.TempDir(), "binfinity-restore-"+sanitize(backupID)+".bin")
-	defer os.Remove(tmp)
-
 	cmd := exec.CommandContext(ctx, d.binary(), "restore",
-		"--id", backupID, "--store", d.Store, "--out", tmp)
+		"--id", backupID, "--store", d.Store, "--out", "-")
 	cmd.Env = d.env()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("binfinity restore: %w: %s", err, bytes.TrimSpace(out))
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+
+	if err := cmd.Start(); err != nil {
+		_ = pr.CloseWithError(err)
+		return fmt.Errorf("start binfinity restore: %w", err)
 	}
 
-	f, err := os.Open(tmp)
-	if err != nil {
-		return fmt.Errorf("open restored stream: %w", err)
+	// Close the pipe writer when the CLI exits, propagating any CLI error so the
+	// consumer sees it as a read error (not a clean EOF).
+	waitCh := make(chan error, 1)
+	go func() {
+		werr := cmd.Wait()
+		_ = pw.CloseWithError(werr)
+		waitCh <- werr
+	}()
+
+	// Consume the recovered bytes as they arrive (the connector imports the DB +
+	// extracts files from this stream). An empty stream surfaces to the connector
+	// as an immediate EOF — the WordPress connector's "no DB dump" guard turns that
+	// into a loud failure rather than a silent no-op restore.
+	consumeErr := consume(pr)
+	if consumeErr != nil {
+		_ = pr.CloseWithError(consumeErr) // unblock the CLI if we stopped early
 	}
-	defer f.Close()
-	// A zero-byte recovery means the CLI exited 0 but wrote nothing (e.g. an
-	// unsupported --out target). Consuming it would let the connector see an empty
-	// stream and report a no-op restore as success — fail loudly instead.
-	if fi, err := f.Stat(); err == nil && fi.Size() == 0 {
-		return fmt.Errorf("restored stream is empty (recovered 0 bytes for backup %s)", backupID)
+	waitErr := <-waitCh
+
+	if waitErr != nil {
+		return fmt.Errorf("binfinity restore: %w: %s", waitErr, bytes.TrimSpace(errOut.Bytes()))
 	}
-	if err := consume(f); err != nil {
-		return fmt.Errorf("consume restored stream: %w", err)
+	if consumeErr != nil {
+		return fmt.Errorf("consume restored stream: %w", consumeErr)
 	}
 	return nil
-}
-
-// sanitize keeps a backup id safe to embed in a temp filename.
-func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			return r
-		default:
-			return '_'
-		}
-	}, s)
 }
