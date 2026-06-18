@@ -1,12 +1,17 @@
-# Used by GoReleaser (/.goreleaser.yaml). Runtime-only: GoReleaser supplies the
-# cross-built addon binary; the binfinity CLI is COPYed from the image the monorepo
-# publishes (diyrex5224/binfinity-cli) — the CLI is built there, not here.
-ARG BF_CLI_TAG=latest
-FROM diyrex5224/binfinity-cli:${BF_CLI_TAG} AS cli
+# Used by GoReleaser (see /.goreleaser.yaml). GoReleaser cross-compiles the
+# binaries and drops them in the build context, so this Dockerfile only assembles
+# the runtime image — no Go toolchain stage. The mysql:8.4 base provides the
+# matching mysqldump/mysql client Presserve shells out to.
 FROM mysql:8.4
-COPY --from=cli /usr/local/bin/binfinity /usr/local/bin/binfinity
+COPY binfinity /usr/local/bin/binfinity
 COPY wordpress-edge /usr/local/bin/wordpress-edge
-ENV HOME=/data
-RUN mkdir -p /data
-WORKDIR /data
+# Credentials live under HOME (default /state), never inside WP_CONTENT (the backup
+# root). Do NOT hardcode CRED_PATH — the SDK derives it from HOME ($HOME/credentials.json),
+# so a deploy that persists creds on a volume just sets HOME to the mount (e.g.
+# HOME=/data). An explicit CRED_PATH would override HOME and defeat that (creds land
+# on the ephemeral container fs → the addon re-enrolls as a NEW system every restart).
+ENV HOME=/state WP_PATH=/var/www/html
+RUN mkdir -p /state && chown mysql:mysql /state
+USER mysql
+WORKDIR /state
 ENTRYPOINT ["/usr/local/bin/wordpress-edge"]
